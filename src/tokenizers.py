@@ -5,6 +5,7 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from scipy.spatial import KDTree
 import warnings
+
 ### ------ Image Tokenizers ------ ###
 
 class PatchSensor(nn.Module):
@@ -20,10 +21,9 @@ class PatchSensor(nn.Module):
         in_channels (int): the number of channels in the input image.
         out_channels (int): the number of output channels / dimensionality of the token embeddings.
         patch_scaling (float): spatial scaling factor applied to all patches to control the amount of overlap.
-        pos_embedding (bool): optionally apply learned positional embeddings to each patch. Default False
 
     """
-    def __init__(self, tessellation, patch_size, in_channels, out_channels, patch_scaling=0.5, pos_embedding=False):
+    def __init__(self, tessellation, patch_size, in_channels, out_channels, patch_scaling=0.5):
         super().__init__()
 
         dists = KDTree(tessellation).query(tessellation, k=3)[0][:,1:3]
@@ -44,11 +44,6 @@ class PatchSensor(nn.Module):
         self.linear = nn.Linear(in_channels * patch_size**2, out_channels)
         
         self.norm = nn.LayerNorm(out_channels)
-
-        if pos_embedding:
-            self.pos_embedding = nn.Parameter(torch.rand(1, tessellation.shape[0], out_channels))
-        else:
-            self.pos_embedding = None
 
     def forward(self, x, fixations=None):
         """
@@ -71,24 +66,20 @@ class PatchSensor(nn.Module):
         
         x = self.linear(x)
         x = self.norm(x)
-        if self.pos_embedding is not None:
-            x = x + self.pos_embedding
             
         return x 
 
 class Patchify(nn.Module):
     """
     Module to transform images into patch tokens similar to Vision Transformers (ViT).
-    Optionally applies learned positional embeddings to the tokens if pos_embedding=True.
-    
+        
     Args:
         image_size (int): The size of the input image.
         patch_size (int): The size of each patch.
         in_channels (int): The number of input channels.
         out_channels (int): The number of output channels for each patch.
-        pos_embedding (bool): Whether to apply learned positional embeddings to the tokens. Default is False.
     """
-    def __init__(self, image_size, patch_size, in_channels, out_channels, pos_embedding=False):
+    def __init__(self, image_size, patch_size, in_channels, out_channels):
         super().__init__()
         
         assert image_size % patch_size == 0, 'image_size should be divisible by patch_size'
@@ -99,10 +90,6 @@ class Patchify(nn.Module):
         
         self.num_patches = (image_size//patch_size)**2
         
-        if pos_embedding:
-            self.pos_embedding = nn.Parameter(torch.rand(1, self.num_patches, out_channels))
-        else:
-            self.pos_embedding = None
     
     def forward(self, x):
         """
@@ -117,9 +104,7 @@ class Patchify(nn.Module):
         x = self.patch_conv(x)
         x = self.reshape(x)
         x = self.norm(x)
-        if self.pos_embedding is not None:
-            x = x + self.pos_embedding
-        
+
         return x
 
 ### ------ Foveated Sampling Distributions ------ ###
