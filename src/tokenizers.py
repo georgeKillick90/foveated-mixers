@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from scipy.spatial import KDTree
@@ -72,7 +73,7 @@ class PatchSensor(nn.Module):
 class Patchify(nn.Module):
     """
     Module to transform images into patch tokens similar to Vision Transformers (ViT).
-        
+
     Args:
         image_size (int): The size of the input image.
         patch_size (int): The size of each patch.

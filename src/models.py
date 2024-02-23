@@ -6,6 +6,7 @@ import einops
 from einops.layers.torch import Rearrange
 import numpy as np
 from typing import Optional
+from torchvision.models import resnet18
 
 ### ------ Blocks and Layers ------ ###
 
@@ -290,7 +291,7 @@ class Localizer(nn.Module):
         
         assert self.resize[0] > 16 and self.resize[1] > 16, "resize dimensions must be greater than 16" 
         
-        base = resnet18(pretrained)
+        base = resnet18(weights='default') if pretrained else resnet18()
         
         self.net = nn.Sequential(base.conv1,
                                  base.bn1,
@@ -350,9 +351,48 @@ class Localizer(nn.Module):
         B, C, out_H, out_W = x.shape
         
         # as temperature decreases, softmax trends towards argmax
-        x = F.softmax(x.view(B, C, -1) / self.temperature).view(B, 1, out_H, out_W)
+        x = F.softmax(x.view(B, C, -1) / self.temperature, dim=-1).view(B, 1, out_H, out_W)
         x = torch.sum(x * self.grid, dim=(2, 3))
         
+        return x
+
+### ------ Spatial Transformer ------ ###
+
+class STN(nn.Module):
+    """
+    Wrapper module that takes a localizer, tokenizer and classifier.
+    The module uses the localizer to produce an (x,y) coordinate from
+    the input image, that is used to centre the tokenizer's FoV on the
+    most salient region in the image. The tokenizer tokenizes the 
+    image and passes it to the classifier which makes a class prediction.
+
+    Args:
+        localizer (nn.Module): localization network
+        tokenizer (nn.Module): tokenizer where forward(image, (x,y))
+        classifier (nn.Module): classifier network that operates on tokenized images
+
+    """
+    def __init__(self, localizer, tokenizer, classifier):
+        super().__init__()
+
+        self.localizer = localizer
+        self.tokenizer = tokenizer
+        self.classifier = classifier
+
+    def forward(self, x):
+        """
+        Forward pass
+
+        Args:
+            x (torch.tensor): Input image
+
+        Returns:
+            torch.tensor: class predictions
+        """
+
+        fixation = self.localizer(x)
+        x = self.tokenizer(x, fixation)
+        x = self.classifier(x)
         return x
 
 ### ------ Predefined Models ------ ###
