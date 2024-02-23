@@ -70,12 +70,12 @@ class SpatialMix(nn.Module):
         init_value (float): The initial value for scaling parameter gamma. Default is 0.1.
     """
     
-    def __init__(self, in_dim, channels, heads=1, out_dim=None, init_value=0.1):
+    def __init__(self, in_dim, channels, n_heads=1, out_dim=None, init_value=0.1):
         super().__init__()
         
-        assert channels%heads==0, "channels must be divisble by the number of heads"
+        assert channels%n_heads==0, "channels must be divisble by the number of heads"
         
-        self.heads = heads
+        self.n_heads = n_heads
         
         self.norm_1 = nn.LayerNorm(channels)
         self.norm_2 = nn.LayerNorm(channels)
@@ -83,7 +83,7 @@ class SpatialMix(nn.Module):
         if out_dim is None:
             out_dim = in_dim
         
-        self.weights = nn.Parameter(torch.rand(heads, in_dim, out_dim), True)
+        self.weights = nn.Parameter(torch.rand(n_heads, in_dim, out_dim), True)
         self.bias = nn.Parameter(torch.zeros(1, 1, 1, out_dim))
         
         self.gamma = nn.Parameter(torch.ones((channels)) * init_value)
@@ -101,7 +101,7 @@ class SpatialMix(nn.Module):
         
         skip = x
         x = self.norm_1(x)
-        x = einops.rearrange(x, 'batch n (heads channels) -> batch heads channels n', heads=self.heads)
+        x = einops.rearrange(x, 'batch n (heads channels) -> batch heads channels n', heads=self.n_heads)
         x = torch.einsum('bhcn,hnm->bhcm', x, self.weights)
         x = x + self.bias
         x = einops.rearrange(x, 'batch heads channels n -> batch n (heads channels)')
@@ -176,16 +176,15 @@ class ViT(nn.Module):
         spatial_dim (int): The spatial dimensionality of the input images.
         width (int): The width of the network.
         depth (int): The depth of the network.
+        n_heads (int): Number of heads in the self attention layer
         n_classes (int): Number of classes for classification.
         init_value (float): Layer scale init value.
-        tokenizer (nn.Module): Tokenizer module for input data. Default is nn.Identity().
     """
     
-    def __init__(self, width, depth, n_heads, n_classes, init_value, tokenizer=nn.Identity()):
+    def __init__(self, spatial_dim, width, depth, n_heads, n_classes, init_value):
+
         super().__init__()
-        
-        self.tokenizer = tokenizer
-        
+                
         blocks = []
         for _ in range(depth):
             block = nn.Sequential(Attention(width, n_heads, dim_head=width//n_heads, init_value=init_value),
@@ -195,6 +194,9 @@ class ViT(nn.Module):
         self.blocks = nn.Sequential(*blocks)
         
         self.fc = nn.Linear(width, n_classes)
+
+        self.pos_embedding = nn.Parameter(torch.zeros((1, spatial_dim+1, width)))
+        self.cls_token = nn.Parameter(torch.rand(width))
     
     def forward(self, x):
         
@@ -202,16 +204,24 @@ class ViT(nn.Module):
         Forward pass of the ResMLP module.
         
         Args:
-            x (torch.Tensor): Input tensor
+            x (torch.Tensor): Input tensor of shape [batch,  spatial_dim, width]
         
         Returns:
             torch.Tensor: Class Predictions
         """
-        
-        x = self.tokenizer(x)
+
+        # Token preparation
+        cls_token = self.cls_token.repeat(x.shape[0], 1, 1)
+        x = torch.cat((x, cls_token), dim=1)
+        x = x + self.pos_embedding
+
+        # NN
         x = self.blocks(x)
-        x = x.mean(dim=1)
+
+        # get class token and predict
+        x = x[:,-1,:]
         x = self.fc(x)
+
         return x
 
 class ResMLP(nn.Module):
@@ -223,19 +233,18 @@ class ResMLP(nn.Module):
         spatial_dim (int): The spatial dimensionality of the input images.
         width (int): The width of the network.
         depth (int): The depth of the network.
+        n_heads (int): Number of heads in the spatialmix layer.
         n_classes (int): Number of classes for classification.
         init_value (float): Layer scale init value.
-        tokenizer (nn.Module): Tokenizer module for input data. Default is nn.Identity().
     """
     
-    def __init__(self, spatial_dim, width, depth, n_classes, init_value, tokenizer=nn.Identity()):
+    def __init__(self, spatial_dim, width, depth, n_heads, n_classes, init_value):
+
         super().__init__()
-        
-        self.tokenizer = tokenizer
-        
+                
         blocks = []
         for _ in range(depth):
-            block = nn.Sequential(SpatialMix(spatial_dim, width, init_value=init_value),
+            block = nn.Sequential(SpatialMix(spatial_dim, width, init_value=init_value, n_heads=n_heads),
                                   FeedForward(width))
             blocks.append(block)
         
@@ -254,8 +263,6 @@ class ResMLP(nn.Module):
         Returns:
             torch.Tensor: Class Predictions
         """
-        
-        x = self.tokenizer(x)
         x = self.blocks(x)
         x = x.mean(dim=1)
         x = self.fc(x)
@@ -316,8 +323,9 @@ class Localizer(nn.Module):
         input size.
         """
         
-        dummy_img = torch.zeros((1, 3) + self.resize)
-        out_shape = self.net(dummy_img).shape[2:]
+        with torch.no_grad():
+            dummy_img = torch.zeros((1, 3) + self.resize)
+            out_shape = self.net(dummy_img).shape[2:]
         
         return out_shape
     
@@ -350,11 +358,11 @@ class Localizer(nn.Module):
 ### ------ Predefined Models ------ ###
 
 def resmlp_s12(n_classes, **kwargs):
-    return ResMLP(196, 384, 12, n_classes, 0.1, **kwargs)
+    return ResMLP(196, 384, 12, 8, n_classes, 0.1, **kwargs)
 
 def vit_s12(n_classes, **kwargs):
     """
     ViT model that is approximately equivalent to
     ResMLP-S12 differing in self-attention layer only.
     """
-    return ViT(384, 12, 8, n_classes, 0.1, **kwargs)
+    return ViT(196, 384, 12, 8, n_classes, 0.1, **kwargs)
