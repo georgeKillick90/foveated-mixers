@@ -85,7 +85,7 @@ class SpatialMix(nn.Module):
             out_dim = in_dim
         
         self.weights = nn.Parameter(torch.rand(n_heads, in_dim, out_dim), True)
-        self.bias = nn.Parameter(torch.zeros(1, 1, 1, out_dim))
+        self.bias = nn.Parameter(torch.zeros(1, n_heads, 1, out_dim))
         
         self.gamma = nn.Parameter(torch.ones((channels)) * init_value)
     
@@ -303,7 +303,7 @@ class Localizer(nn.Module):
         
         # temperature of the softmax
         self.temperature = temperature
-        self.conv1x1 = nn.Conv2d(256, 1, 1)
+        self.saliency = nn.Conv2d(256, 1, 1)
         
         # make a grid of xy coordinates corresponding to pixel
         # coordinates, normalized between (-1, 1)
@@ -345,7 +345,7 @@ class Localizer(nn.Module):
         # Compute saliency map from input image
         x = F.interpolate(x, self.resize, mode='bilinear', antialias=True)
         x = self.net(x)
-        x = self.conv1x1(x)
+        x = self.saliency(x)
         
         # Computes softargmax to produce an (x,y) coordinate
         B, C, out_H, out_W = x.shape
