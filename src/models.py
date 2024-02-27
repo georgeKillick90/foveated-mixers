@@ -12,7 +12,7 @@ from torchvision.models import resnet18
 
 class FeedForward(nn.Module):
     
-    """ 
+    ''' 
     Generic FeedForward inverse bottleneck for vision models, seen in
     MobileNets, ConvNeXt, Vision Transformers, Mixer Architectures
     and more. Performs a non-linear mixing of information across
@@ -22,22 +22,15 @@ class FeedForward(nn.Module):
         channels (int): Number of input and output channels.
         expansion_factor (int, optional): Expansion factor for the intermediate hidden layer. Default is 4.
         act (torch.nn.Module, optional): Activation function to be used. Default is torch.nn.GELU().
-        init_value (float, optional): Initial value for gamma parameter. Default is 0.1.
-    """
-    def __init__(self, channels, expansion_factor=4, act=nn.GELU(), init_value=0.1):
+    '''
+    def __init__(self, channels, expansion_factor=4, act=nn.GELU()):
         
         super().__init__()
-        
-        self.norm_1 = nn.LayerNorm(channels)
-        self.norm_2 = nn.LayerNorm(channels)
-        
-        # no bias in second linear layer because it is followed by layernorm
+                
+        self.norm = nn.LayerNorm(channels)
         self.linear_1 = nn.Linear(channels, channels * expansion_factor)
-        self.linear_2 = nn.Linear(channels * expansion_factor, channels, bias=False)
-        
+        self.linear_2 = nn.Linear(channels * expansion_factor, channels)
         self.act = act
-        self.gamma = nn.Parameter(torch.ones((channels)) * init_value)
-
     
     def forward(self, x):
         """
@@ -47,48 +40,31 @@ class FeedForward(nn.Module):
         Returns:
             torch.Tensor: Output tensor. Shape [Batch Size, N, Channels]
         """
-        skip = x
-        x = self.norm_1(x)
+        x = self.norm(x)
         x = self.linear_1(x)
         x = self.act(x)
         x = self.linear_2(x)
-        x = self.norm_2(x)
-        x = skip + (self.gamma * x)
-    
+        
         return x
         
 class SpatialMix(nn.Module):
     
     """
-    Module that mixes spatial features via an MLP as done in MLP-Mixer, ResMLP, and More.
+    Module that mixes spatial features via a linear layer as done in MLP-Mixer, ResMLP, and More.
     The module supports multiple heads similar to Multi-Head Attention (MHA).
     
     Args:
-        in_dim (int): The input dimensionality.
-        channels (int): The number of channels in the input tensor.
-        heads (int): The number of heads for multi-head mixing. Default is 1.
-        out_dim (int, optional): The output dimensionality. If not provided, defaults to in_dim.
-        init_value (float): The initial value for scaling parameter gamma. Default is 0.1.
+        n_patches (int): The input dimensionality.
+        dim (int): The number of channels in the input tensor.
     """
     
-    def __init__(self, in_dim, channels, n_heads=1, out_dim=None, init_value=0.1):
+    def __init__(self, n_patches, dim):
         super().__init__()
+                        
+        self.norm = nn.LayerNorm(dim)
         
-        assert channels%n_heads==0, "channels must be divisble by the number of heads"
-        
-        self.n_heads = n_heads
-        
-        self.norm_1 = nn.LayerNorm(channels)
-        self.norm_2 = nn.LayerNorm(channels)
-        
-        if out_dim is None:
-            out_dim = in_dim
-        
-        self.weights = nn.Parameter(torch.rand(n_heads, in_dim, out_dim), True)
-        self.bias = nn.Parameter(torch.zeros(1, n_heads, 1, out_dim))
-        
-        self.gamma = nn.Parameter(torch.ones((channels)) * init_value)
-    
+        self.linear = nn.Linear(n_patches, n_patches)
+            
     def forward(self, x):
         """ 
         Forward pass of the SpatialMix module.
@@ -99,15 +75,11 @@ class SpatialMix(nn.Module):
         Returns:
             torch.Tensor: Output tensor after spatial mixing. Shape [Batch Size, N, Channels].
         """
-        
-        skip = x
-        x = self.norm_1(x)
-        x = einops.rearrange(x, 'batch n (heads channels) -> batch heads channels n', heads=self.n_heads)
-        x = torch.einsum('bhcn,hnm->bhcm', x, self.weights)
-        x = x + self.bias
-        x = einops.rearrange(x, 'batch heads channels n -> batch n (heads channels)')
-        x = self.norm_2(x)
-        x = skip + (self.gamma * x)
+
+        x = self.norm(x)
+        x = einops.rearrange(x, 'batch n channels -> batch channels n')
+        x = self.linear(x)
+        x = einops.rearrange(x, 'batch channels n -> batch n channels')
         
         return x
 
@@ -124,7 +96,7 @@ class Attention(nn.Module):
         init_value (float): Layer scale init value.
     
     """
-    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0., init_value=0.1):
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
         super().__init__()
         inner_dim = dim_head *  heads
         project_out = not (heads == 1 and dim_head == dim)
@@ -144,10 +116,7 @@ class Attention(nn.Module):
             nn.Dropout(dropout)
         ) if project_out else nn.Identity()
         
-        self.gamma = nn.Parameter(torch.ones((dim)) * init_value)
-
     def forward(self, x):
-        skip = x
         x = self.norm(x)
 
         qkv = self.to_qkv(x).chunk(3, dim = -1)
@@ -161,8 +130,22 @@ class Attention(nn.Module):
         out = torch.matmul(attn, v)
         out = einops.rearrange(out, 'b h n d -> b n (h d)')
         out = self.to_out(out)
-        out = skip + (out * self.gamma)
         return out
+
+class Block(nn.Module):
+    def __init__(self, n_patches, dim, init_value=0.1):
+        super().__init__()
+
+        self.layerscale_1 = nn.Parameter(init_value * torch.ones((dim)))
+        self.layerscale_2 = nn.Parameter(init_value * torch.ones((dim)))
+
+        self.spatial_mix = SpatialMix(n_patches, dim)
+        self.channel_mix = FeedForward(dim)
+
+    def forward(self, x):
+        x = x + (self.layerscale_1 * self.spatial_mix(x))
+        x = x + (self.layerscale_2 * self.channel_mix(x))
+        return x
 
 ### ------ Model Constructors ------ ###
 
@@ -234,19 +217,17 @@ class ResMLP(nn.Module):
         spatial_dim (int): The spatial dimensionality of the input images.
         width (int): The width of the network.
         depth (int): The depth of the network.
-        n_heads (int): Number of heads in the spatialmix layer.
         n_classes (int): Number of classes for classification.
         init_value (float): Layer scale init value.
     """
     
-    def __init__(self, spatial_dim, width, depth, n_heads, n_classes, init_value):
+    def __init__(self, spatial_dim, width, depth, n_classes, init_value=1.0):
 
         super().__init__()
                 
         blocks = []
         for _ in range(depth):
-            block = nn.Sequential(SpatialMix(spatial_dim, width, init_value=init_value, n_heads=n_heads),
-                                  FeedForward(width))
+            block = nn.Sequential(Block(spatial_dim, width, init_value))
             blocks.append(block)
         
         self.blocks = nn.Sequential(*blocks)
@@ -398,7 +379,7 @@ class STN(nn.Module):
 ### ------ Predefined Models ------ ###
 
 def resmlp_s12(n_classes, **kwargs):
-    return ResMLP(196, 384, 12, 8, n_classes, 0.1, **kwargs)
+    return ResMLP(196, 384, 12, n_classes, **kwargs)
 
 def vit_s12(n_classes, **kwargs):
     """
