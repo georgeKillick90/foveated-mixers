@@ -16,7 +16,7 @@ def train(
     
     def print_summary(tag, metrics):
         summary = "\nAverage {tag} Loss: {loss:.2f} - Average {tag} Accuracy {acc:.2f}"
-        print(summary.format(tag=tag, loss=train_metrics['loss'], acc=train_metrics['acc']))
+        print(summary.format(tag=tag, loss=metrics['loss'], acc=metrics['acc']))
         
     
     print("### Training ###")
@@ -50,12 +50,12 @@ def train_epoch(model, optimizer, scheduler, scaler, train_loader, device='cuda'
     acc_meter = AverageMeter()
     
     model.train()
-    
-    # with autocast for mixed precision
-    with torch.autocast(device_type=device, dtype=torch.float16):
         
-        for i, (images, labels) in enumerate (train_loader):
-            
+    for i, (images, labels) in enumerate (train_loader):
+
+        # with autocast for mixed precision
+        with torch.autocast(device_type=device, dtype=torch.float16):
+        
             # forward
             
             images, labels = images.to(device), labels.to(device)
@@ -63,40 +63,40 @@ def train_epoch(model, optimizer, scheduler, scaler, train_loader, device='cuda'
             predictions = model(images)
             
             loss = F.cross_entropy(predictions, labels, label_smoothing=0.1)
+        
+        # backwards with mixed precision
             
-            # backwards with mixed precision
-            
-            scaler.scale(loss).backward()
-            
-            # optimizer and scheduler step + grad zeroing
+        scaler.scale(loss).backward()
+        
+        # optimizer and scheduler step + grad zeroing
 
-            scaler.step(optimizer)
+        scaler.step(optimizer)
 
-            scaler.update()
+        scaler.update()
 
-            optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(set_to_none=True)
 
-            scheduler.step()
-            
-            # check loss is not nan
-            
-            assert not torch.isnan(loss), "loss is nan"
-            
-            # compute accuracy for batch
-            
-            acc = accuracy(predictions, labels)
-            
-            # update the metric meters to track statistics over epoch
-            
-            loss_meter.update(loss.item(), n=images.shape[0])
-            acc_meter.update(acc, n=images.shape[0])
-            
-            # prints current batch loss and accuracy every 5 batches
-            
-            if i%5 == 0:
-                msg = "Batch: {batch} - Loss: {loss:.2f} --- Accuracy: {accuracy:.2f}"
-                print(msg.format(batch=i, loss=loss_meter.val, accuracy=acc_meter.val))
-            
+        scheduler.step()
+        
+        # check loss is not nan
+        
+        assert not torch.isnan(loss), "loss is nan"
+        
+        # compute accuracy for batch
+        
+        acc = accuracy(predictions, labels)
+        
+        # update the metric meters to track statistics over epoch
+        
+        loss_meter.update(loss.item(), n=images.shape[0])
+        acc_meter.update(acc, n=images.shape[0])
+        
+        # prints current batch loss and accuracy every 5 batches
+        
+        if i%5 == 0:
+            msg = "Batch: {batch} - Loss: {loss:.2f} --- Accuracy: {accuracy:.2f}"
+            print(msg.format(batch=i, loss=loss_meter.val, accuracy=acc_meter.val))
+        
     return {'loss': loss_meter.avg, 'acc': acc_meter.avg}
 
 def test(model, valid_loader, device='cuda'):
@@ -108,10 +108,10 @@ def test(model, valid_loader, device='cuda'):
     
     with torch.no_grad():
         
-        with torch.autocast(device_type=device, dtype=torch.float16):
-        
-            for i, (images, labels) in enumerate(valid_loader):
-                
+        for i, (images, labels) in enumerate(valid_loader):
+
+            with torch.autocast(device_type=device, dtype=torch.float16):
+            
                 images, labels = images.to(device), labels.to(device)
                 
                 predictions = model(images)
